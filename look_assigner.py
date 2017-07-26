@@ -77,3 +77,21 @@ def do_assign( file_name:str ):
 	clear_material_objects()
 	bpy.data.groups.remove( ref_grp )
 
+
+if __name__ == '__main__':
+	import sys
+	from imp import reload
+
+	path = 'C:/dev/blender/python'
+
+	if not path in sys.path:
+		sys.path.insert( 0, path )
+
+	from crowd_tools import look_assigner
+	reload(look_assigner)
+
+	file_name = 'T:\\Projects\\0053_7723\\asset\\character\\chr432_crowd_characters_low_res\\rig\\sandbox\\chr432_crowd_characters_low_res.v0005.blend'
+
+	look_assigner.do_assign( file_name )
+
+
