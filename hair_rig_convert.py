@@ -33,6 +33,29 @@ def find_particle_system( name:Union[str,bpy.types.ParticleSystem] ) -> bpy.type
 
 
 ## ======================================================================
+def find_particle_object( name:Union[str,bpy.types.ParticleSystem] ) -> bpy.types.Object:
+	"""
+	Search through bpy.data.objects for the first object to which
+	the specified ParticleSystem belongs.
+
+	:param name: Name of the system to search for. If a ParticleSystem object
+				is passed in, it will be directly returned.
+	:returns: The system, or None on error.
+	"""
+
+	if isinstance(name, bpy.types.ParticleSystem):
+		return name
+
+	particle_objects = [ x for x in scene.objects if len(x.particle_systems) ]
+	for item in particle_objects:
+		for system in item.particle_systems:
+			if system.name == name:
+				return system
+
+	return None
+
+
+## ======================================================================
 """
 Curve Conversion Functions
 
@@ -382,7 +405,7 @@ def build_chain_single(
 	hair_key_count = len( p[0].hair_keys )
 	base_name = ps.name.split('.')[1]
 
-	base_bone_name  = 'crvguide_{:03d}'.format(index) + '.{:03d}'
+	base_bone_name  = 'guide.{}_{:03d}'.format(ps.name, index) + '.{:03d}'
 	all_points = [ x.co.copy() for x in p[index].hair_keys ]
 
 	## for that last bone
@@ -397,10 +420,14 @@ def build_chain_single(
 	scene.update()
 	bpy.ops.object.mode_set( mode='EDIT' )
 
+	root_bone = armature.data.edit_bones[ 'root' ]
+
 	for index in range(hair_key_count):
 		bone = armature.data.edit_bones.new( base_bone_name.format(index) )
 		if len(edit_bones):
 			bone.parent = edit_bones[-1]
+		else:
+			bone.parent = root_bone
 
 		bone.head = all_points[index]
 		bone.tail = all_points[index+1]
@@ -417,12 +444,60 @@ def build_chain_single(
 	result = [ armature.pose.bones[x] for x in bone_names ]
 	return result
 
+def make_bone( armature:bpy.types.Armature, name:str, head:Optional(Vector)=None, 
+				tail:Optional(Vector)=None, up:Optional(Vector)=None,
+				parent:Optional(bpy.types.EditBone) ) -> bpy.types.EditBone:
+	"""
+	Creates a new bone in the specified armature and returns the EditBone representing it.
 
-def do_armature_conversion( system:Union[str,bpy.types.ParticleSystem] ) -> bpy.types.Armature: 
+	:param armature: The Armature data in which to create the new bone.
+	:param name: Name of the new bone to create.
+	:param head: If not None, the head position of the new bone.
+	:param tail: If not None, the tail position of the new bone.
+	:param up: If not None, the up vector of the new bone for roll calculation.
+	:param parent: Parent EditBone of this new bone.
+	:return: an EditBone.
+	:throws: ValueError if head, tail, or up are not mathutils.Vectors, if the Armature is not in edit mode,
+			or if a bone by the specified name already exists
+	"""
+
+	if not bpy.context.mode == 'EDIT':
+		raise ValueError( 'Armature "{}" not in Edit mode.'.format(armature.name) )
+
+	for vector in head, tail, up:
+		if vector and not isinstance(vector, Vector):
+			raise ValueError( 'head, tail, and up must be None or mathutils.Vector.' )
+
+	if name in armature.edit_bones:
+		raise ValueError( 'A bone named "{}" already exists in Armature "{}".'.format(name, armature.name) )
+
+	if head is None:
+		head = Vector( [0,0,0] )
+
+	if tail is None:
+		tail = Vector( [0,2,0] )
+
+	bone = armature.edit_bones.new()
+
+	## copies are here to protect against passing another bone.head or bone.tail
+	bone.head = head.copy()
+	bone.tail = tail.copy()
+
+	if up:
+		bone.align_roll( up )
+	
+	if parent:
+		bone.parent = parent
+
+	return bone
+
+
+def do_armature_conversion( base_ob:bpy.types.Object, system:Union[str,bpy.types.ParticleSystem] ) -> bpy.types.Armature: 
 	"""
 	Converts the specified particle system combed hair guides
 	into a series of bone chains for animated guide driving.
 
+	:param base_ob: The object on which to look for the particle system
 	:param system: The Blender ParticleSystem to convert.
 	:returns: A new armature with a bone chain per guide curve hair, each chain
 			containing a bone per guide hair CV
@@ -443,18 +518,28 @@ def do_armature_conversion( system:Union[str,bpy.types.ParticleSystem] ) -> bpy.
 	## make the armature
 	base_name = ps.name.split('.')[1]
 
-	arm = bpy.data.armatures.new( 'arm.{}.000'.format(base_name) )
-	ob  = bpy.data.objects.new( 'rig.{}.000'.format(base_name), arm )
-	scene.objects.link( ob )
+	rig_name = 'rig.{}.000'.format( base_ob.name )
+	arm_name = 'arm.{}.000'.format( base_ob.name )
+
+	if not rig_name in bpy.data.objects:
+		arm = bpy.data.armatures.new( arm_name )
+		ob  = bpy.data.objects.new( rig_name, arm )
+		scene.objects.link( ob )
+	else:
+		ob  = bpy.context.scene.objects[ rig_name ]
+		ob.hide = False
+		arm = ob.data
+
 	ob.select = True
 	scene.objects.active = ob
 
 	## root bone
 	bpy.ops.object.mode_set( mode='EDIT' )
-	root_bone = arm.edit_bones.new( 'root' )
-	root_bone.head = Vector( [0,0,0] )
-	root_bone.tail = Vector( [0,2,0] )
-	ob.update_from_editmode()
+	if not 'root' in arm.edit_bones:
+		root_bone = arm.edit_bones.new( 'root' )
+		root_bone.head = Vector( [0,0,0] )
+		root_bone.tail = Vector( [0,2,0] )
+		ob.update_from_editmode()
 
 	for index in range( curve_count ):
 		chain = build_chain_single( ps, index, ob )
@@ -462,5 +547,12 @@ def do_armature_conversion( system:Union[str,bpy.types.ParticleSystem] ) -> bpy.
 
 		result.append( chain )
 	
+	## bugfix: make sure the armature object itself is scaled up to match
+	# scale = base_ob.world_matrix.to_scale()
+	# ob.scale = scale
+
+	ob.hide = True
+	scene.update()
+
 	return result
 
